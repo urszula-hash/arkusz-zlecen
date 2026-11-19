@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arkusz zleceń na żywo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+<script src="config.js"></script>
+<style>
+:root{--ink:#000;--mut:#555;--line:#000;--soft:#ececec;--acc:#1d4ed8;--bg:#fff;--bad:#b91c1c;--ok:#15803d}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,system-ui,sans-serif}
+main{max-width:560px;margin:0 auto;padding:18px 16px 40px}
+h1{font-size:26px;margin:4px 0 14px;font-weight:800}
+h2{font-size:20px;margin:0 0 10px}
+p{line-height:1.45;margin:0 0 10px}
+.card{border:2px solid var(--line);border-radius:14px;padding:16px;margin:0 0 14px;background:#fff}
+.card.g{background:var(--soft)}
+.big{font-size:30px;font-weight:800}
+.acc{color:var(--acc)}
+.small{font-size:14px;color:var(--mut)}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{font:inherit;font-size:17px;font-weight:600;border:2px solid var(--line);background:#fff;color:var(--ink);border-radius:10px;padding:11px 14px;cursor:pointer}
+.btn.on{background:var(--ink);color:#fff}
+.btn.main{background:var(--acc);border-color:var(--acc);color:#fff;width:100%;font-size:19px;padding:14px}
+.btn:disabled{opacity:.4;cursor:default}
+.seg .btn{flex:1}
+.price{display:flex;align-items:center;gap:8px}
+.price input{font:inherit;font-size:28px;font-weight:700;width:100%;text-align:center;border:2px solid var(--line);border-radius:10px;padding:8px}
+.price .btn{font-size:24px;padding:8px 16px}
+label{display:block;font-weight:600;margin:12px 0 6px}
+.warn{color:var(--bad);font-size:15px;margin-top:8px}
+table{border-collapse:collapse;width:100%}
+td,th{border:1.5px solid var(--line);padding:6px 6px;text-align:right;font-size:15px}
+th{background:var(--soft);text-align:center}
+.plus{color:var(--ok);font-weight:700}.minus{color:var(--bad);font-weight:700}
+
+/* ---------- rzutnik ---------- */
+body.sala main{max-width:none;padding:28px 44px}
+.sala h1{font-size:46px;margin:0}
+.sala .top{display:flex;align-items:baseline;justify-content:space-between;gap:20px;margin-bottom:22px}
+.sala .top .small{font-size:22px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:26px}
+.kpis{display:flex;gap:20px;margin-bottom:22px}
+.kpi{flex:1;border:2.5px solid var(--line);border-radius:18px;padding:16px 22px}
+.kpi .l{font-size:22px;color:var(--mut)}
+.kpi .v{font-size:56px;font-weight:800;line-height:1.1}
+.sala .card{border-width:2.5px;border-radius:18px;padding:20px 24px}
+.sala h2{font-size:28px}
+.sala td,.sala th{font-size:26px}
+.sala td,.sala th{padding:6px 14px;border-width:2px}
+.sala p{font-size:24px}
+.bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:flex-end;padding:10px 20px;background:rgba(255,255,255,.92);border-top:1px solid #ccc}
+.bar .btn{font-size:16px;padding:8px 12px}
+.hidden-book{display:flex;align-items:center;justify-content:center;text-align:center;min-height:300px;font-size:30px;color:var(--mut);border:2.5px dashed var(--line);border-radius:18px;padding:30px}
+svg text{font-family:Inter,system-ui,sans-serif}
+.tick{font-size:22px}
+.tr-new{animation:fl 1.2s}
+@keyframes fl{from{background:#c7d7fb}to{background:transparent}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script>
+'use strict';
+/* =========================================================
+   Arkusz zleceń na żywo
+   Telefon: rola, wartość akcji, zlecenie.  Rzutnik: ?sala=KLUCZ
+   Tryb ćwiczebny bez serwera (boty): ?sala&demo  lub  ?demo
+   ========================================================= */
+const REF = 5000;          // kurs odniesienia: 50,00 zł (w groszach)
+const TICK = 5;            // krok notowania w aplikacji: 0,05 zł
+const MAXQ = 500;          // akcje na osobę
+const prm = new URLSearchParams(location.search);
+const API = (window.API_URL || '').trim();
+const DEMO = prm.has('demo') || !API;
+const SALA = prm.has('sala');
+const KLUCZ = prm.get('sala') || '';
+const $ = s => document.querySelector(s);
+const app = $('#app');
+
+/* ---------- formatowanie ---------- */
+const zl = g => (g / 100).toFixed(2).replace('.', ',');
+const szt = n => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+const zysk = g => (g >= 0 ? '+' : '−') + szt(Math.abs(g / 100).toFixed(2).replace('.', ',')) + ' zł';
+
+/* ---------- komunikacja z serwerem (JSONP) ---------- */
+function jsonp(params) {
+  return new Promise((res, rej) => {
+    const cb = 'cb' + Date.now() + Math.floor(Math.random() * 1e6);
+    const s = document.createElement('script');
+    const to = setTimeout(() => { done(); rej(new Error('timeout')); }, 15000);
+    function done() { clearTimeout(to); delete window[cb]; s.remove(); }
+    window[cb] = d => { done(); res(d); };
+    s.onerror = () => { done(); rej(new Error('siec')); };
+    s.src = API + '?' + new URLSearchParams(Object.assign({}, params, { cb }));
+    document.head.appendChild(s);
+  });
+}
+
+/* ---------- tryb ćwiczebny: serwer w pamięci + boty ---------- */
+const DS = { runda: 1, faza: 'otwarta', zlecenia: [] };
+function demoApi(p) {
+  if (p.a === 'dodaj') {
+    if (DS.faza !== 'otwarta' || +p.runda !== DS.runda) return Promise.resolve({ ok: false, powod: 'zamknieta', runda: DS.runda });
+    const nr = DS.zlecenia.length + 1;
+    DS.zlecenia.push([nr, Date.now(), DS.runda, p.dev, p.strona, p.typ, p.typ === 'LIMIT' ? +p.limit : '', +p.liczba, +p.wartosc]);
+    return Promise.resolve({ ok: true, nr, runda: DS.runda });
+  }
+  if (p.a === 'ustaw') {
+    if (p.reset === '1') DS.zlecenia = [];
+    if (p.runda) DS.runda = +p.runda;
+    if (p.faza) DS.faza = p.faza;
+    return Promise.resolve({ ok: true });
+  }
+  return Promise.resolve(JSON.parse(JSON.stringify(DS)));
+}
+const api = p => DEMO ? demoApi(p) : jsonp(p);
+function botTick() {
+  if (DS.faza !== 'otwarta') return;
+  const s = Math.random() < 0.5 ? 'K' : 'S';
+  const v = losujWartosc();
+  let typ = 'LIMIT';
+  const r = Math.random();
+  if (r < 0.08) typ = 'PKC'; else if (r < 0.14 && DS.runda === 2) typ = 'PCR';
+  let lim = s === 'K' ? v - Math.round(Math.random() * 12) * TICK : v + Math.round(Math.random() * 12) * TICK;
+  demoApi({ a: 'dodaj', runda: DS.runda, dev: 'bot' + Math.floor(Math.random() * 1e6), strona: s, typ,
+            limit: (lim / 100).toFixed(2), liczba: 100 * (1 + Math.floor(Math.random() * 5)), wartosc: (v / 100).toFixed(2) });
+}
+
+/* ---------- silnik giełdy ---------- */
+function wczytaj(dane) {
+  return dane.map(r => ({ nr: +r[0], t: +r[1], runda: +r[2], dev: String(r[3]), s: r[4], typ: r[5],
+    p: r[6] === '' || r[6] === null ? null : Math.round(+r[6] * 100), q: +r[7], v: r[8] === '' ? null : Math.round(+r[8] * 100) }))
+    .sort((a, b) => a.nr - b.nr);
+}
+
+// Aukcja według kryteriów GPW WATS: maks. wolumen, min. nadwyżka, strona nadwyżki, najbliżej kursu odniesienia
+function aukcja(ord, ref) {
+  const K = ord.filter(o => o.s === 'K'), S = ord.filter(o => o.s === 'S');
+  const ceny = [...new Set(ord.filter(o => o.p !== null).map(o => o.p).concat([ref]))].sort((a, b) => a - b);
+  const tab = ceny.map(p => {
+    const D = K.filter(o => o.typ !== 'LIMIT' || o.p >= p).reduce((a, o) => a + o.q, 0);
+    const P = S.filter(o => o.typ !== 'LIMIT' || o.p <= p).reduce((a, o) => a + o.q, 0);
+    return { p, D, P, V: Math.min(D, P), N: D - P };
+  });
+  const maxV = Math.max(0, ...tab.map(r => r.V));
+  const wynik = { tab, kurs: null, V: 0, nadwyzka: 0, fills: {}, reszta: [] };
+  if (maxV === 0) { wynik.reszta = ord.filter(o => o.typ === 'LIMIT').map(o => ({ ...o, rem: o.q })); return wynik; }
+  let c = tab.filter(r => r.V === maxV);
+  const minN = Math.min(...c.map(r => Math.abs(r.N)));
+  c = c.filter(r => Math.abs(r.N) === minN);
+  let w;
+  if (c.length === 1) w = c[0];
+  else if (c.every(r => r.N > 0)) w = c[c.length - 1];
+  else if (c.every(r => r.N < 0)) w = c[0];
+  else w = c.slice().sort((a, b) => Math.abs(a.p - ref) - Math.abs(b.p - ref) || b.p - a.p)[0];
+  wynik.kurs = w.p; wynik.V = maxV; wynik.nadwyzka = w.N;
+  const przydziel = (lista, por) => {
+    let zostalo = maxV;
+    lista.sort(por).forEach(o => {
+      const ok = o.typ !== 'LIMIT' || (o.s === 'K' ? o.p >= w.p : o.p <= w.p);
+      const q = ok ? Math.min(o.q, zostalo) : 0;
+      zostalo -= q;
+      if (q > 0) wynik.fills[o.nr] = [{ q, p: w.p }];
+      if (o.typ === 'LIMIT' && o.q - q > 0) wynik.reszta.push({ ...o, rem: o.q - q });
+    });
+  };
+  const pkcFirst = (a, b) => (a.typ === 'LIMIT') - (b.typ === 'LIMIT');
+  przydziel(K, (a, b) => pkcFirst(a, b) || (b.p - a.p) || a.nr - b.nr);
+  przydziel(S, (a, b) => pkcFirst(a, b) || (a.p - b.p) || a.nr - b.nr);
+  wynik.reszta.sort((a, b) => a.nr - b.nr);
+  return wynik;
+}
+
+// Notowania ciągłe: priorytet ceny, potem czasu; transakcja po cenie zlecenia czekającego w arkuszu
+function ciagle(start, ord) {
+  const B = [], A = [], trades = [], fills = {}, anul = {};
+  const wstaw = o => {
+    if (o.s === 'K') { B.push(o); B.sort((a, b) => b.p - a.p || a.nr - b.nr); }
+    else { A.push(o); A.sort((a, b) => a.p - b.p || a.nr - b.nr); }
+  };
+  start.forEach(o => wstaw({ ...o }));
+  ord.forEach(z => {
+    const o = { ...z, rem: z.q };
+    const opp = o.s === 'K' ? A : B;
+    const best = opp.length ? opp[0].p : null;
+    const krzyz = r => o.typ === 'PKC' ? true : o.typ === 'PCR' ? r.p === best : (o.s === 'K' ? r.p <= o.p : r.p >= o.p);
+    while (o.rem > 0 && opp.length && krzyz(opp[0])) {
+      const r = opp[0], q = Math.min(o.rem, r.rem);
+      trades.push({ p: r.p, q, nr: trades.length + 1, ag: o.s });
+      (fills[o.nr] = fills[o.nr] || []).push({ q, p: r.p });
+      (fills[r.nr] = fills[r.nr] || []).push({ q, p: r.p });
+      o.rem -= q; r.rem -= q;
+      if (r.rem === 0) opp.shift();
+    }
+    if (o.rem > 0) { if (o.typ === 'LIMIT') wstaw(o); else anul[o.nr] = o.rem; }
+  });
+  return { B, A, trades, fills, anul };
+}
+
+function przelicz(st) {
+  const ord = wczytaj(st.zlecenia || []);
+  const r1 = ord.filter(o => o.runda === 1), r2 = ord.filter(o => o.runda === 2);
+  const auk = aukcja(r1, REF);
+  const r1koniec = st.runda > 1 || st.faza !== 'otwarta';
+  const ci = ciagle(r1koniec ? auk.reszta : [], r2);
+  return { ord, r1, r2, auk, r1koniec, ci };
+}
+
+function poziomy(lista, n) {
+  const m = new Map();
+  lista.forEach(o => { const x = m.get(o.p) || { p: o.p, q: 0, n: 0 }; x.q += o.rem; x.n++; m.set(o.p, x); });
+  return [...m.values()].slice(0, n);
+}
+
+function losujWartosc() { return REF - 300 + TICK * Math.floor(Math.random() * (600 / TICK + 1)); }
+
+/* =========================================================
+   TELEFON
+   ========================================================= */
+let DEV = '';
+try { DEV = localStorage.getItem('az_dev') || ''; } catch (e) {}
+if (!DEV) { DEV = Math.random().toString(36).slice(2, 10); try { localStorage.setItem('az_dev', DEV); } catch (e) {} }
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem('az_' + k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('az_' + k, JSON.stringify(v)); } catch (e) {} }
+};
+let T = { runda: 1, faza: 'otwarta', typ: 'LIMIT', q: 100, p: REF, info: '' };
+
+function rola(runda) {
+  let r = LS.get('rola' + runda, null);
+  if (!r) { r = { s: Math.random() < 0.5 ? 'K' : 'S', v: losujWartosc() }; LS.set('rola' + runda, r); T.p = r.v; }
+  return r;
+}
+const moje = runda => LS.get('moje' + runda, []);
+
+async function telefon() {
+  app.innerHTML = '<h1>Arkusz zleceń na żywo</h1><p class="small">Łączenie…</p>';
+  try {
+    const st = await api({ a: 'stan' });
+    T.runda = st.runda; T.faza = st.faza;
+    const r = rola(T.runda);
+    if (!LS.get('ustawiono' + T.runda, false)) { T.p = r.v; LS.set('ustawiono' + T.runda, true); }
+    rysujTelefon();
+  } catch (e) {
+    app.innerHTML = '<h1>Arkusz zleceń na żywo</h1><div class="card"><p>Brak połączenia z serwerem. Sprawdź internet i odśwież stronę.</p><button class="btn main" onclick="location.reload()">Odśwież</button></div>';
+  }
+}
+
+function rysujTelefon() {
+  const r = rola(T.runda), mz = moje(T.runda);
+  const lim = T.runda === 1 ? 1 : 3;
+  const uzyte = mz.reduce((a, z) => a + z.q, 0);
+  const kup = r.s === 'K';
+  const typy = T.runda === 1 ? [['LIMIT', 'Limit'], ['PKC', 'PKC']] : [['LIMIT', 'Limit'], ['PKC', 'PKC'], ['PCR', 'PCR']];
+  if (!typy.some(t => t[0] === T.typ)) T.typ = 'LIMIT';
+  const wolne = Math.max(0, MAXQ - uzyte);
+  if (T.q > wolne) T.q = Math.max(100, Math.floor(wolne / 100) * 100);
+  let ostrz = '';
+  if (T.typ === 'LIMIT' && kup && T.p > r.v) ostrz = 'Limit wyższy niż Twoja wartość akcji: możesz kupić drożej, niż akcja jest dla Ciebie warta.';
+  if (T.typ === 'LIMIT' && !kup && T.p < r.v) ostrz = 'Limit niższy niż Twoja wartość akcji: możesz sprzedać taniej, niż akcja jest dla Ciebie warta.';
+  if (T.typ !== 'LIMIT') ostrz = 'Zlecenie bez limitu: cena transakcji zależy od zleceń przeciwnych w arkuszu.';
+  const otwarta = T.faza === 'otwarta';
+  const mozna = otwarta && mz.length < lim && wolne >= 100;
+  app.innerHTML = `
+  <h1>Arkusz zleceń na żywo</h1>
+  <div class="card g">
+    <div class="small">Runda ${T.runda}: ${T.runda === 1 ? 'aukcja otwarcia' : 'notowania ciągłe'}${otwarta ? '' : ' (zamknięta)'}</div>
+    <div class="big">${kup ? 'Kupujesz' : 'Sprzedajesz'} akcje spółki X</div>
+    <p style="margin:6px 0 0">Akcja jest dla Ciebie warta <b class="acc">${zl(r.v)} zł</b>.
+    ${kup ? 'Zarabiasz, jeśli kupisz taniej.' : 'Zarabiasz, jeśli sprzedasz drożej.'} Masz ${kup ? 'środki na' : ''} ${szt(MAXQ)} akcji.</p>
+  </div>
+  ${T.info ? `<div class="card">${T.info}</div>` : ''}
+  ${mozna ? `
+  <div class="card">
+    <h2>Nowe zlecenie ${kup ? 'kupna' : 'sprzedaży'}</h2>
+    <label>Rodzaj zlecenia</label>
+    <div class="row seg">${typy.map(t => `<button class="btn ${T.typ === t[0] ? 'on' : ''}" onclick="T.typ='${t[0]}';rysujTelefon()">${t[1]}</button>`).join('')}</div>
+    ${T.typ === 'LIMIT' ? `<label>Limit ceny, zł</label>
+    <div class="price"><button class="btn" onclick="T.p=Math.max(${TICK},T.p-${TICK});rysujTelefon()">−</button>
+      <input id="lim" inputmode="decimal" value="${zl(T.p)}" onchange="ustawLimit(this.value)">
+      <button class="btn" onclick="T.p+=${TICK};rysujTelefon()">+</button></div>
+    <div class="small" style="margin-top:6px">Krok notowania w aplikacji: 0,05 zł. Kurs odniesienia: ${zl(REF)} zł.</div>`
+    : `<p class="small" style="margin-top:10px">${T.typ === 'PKC' ? (T.runda === 1 ? 'PKC w aukcji: ważne na fixing (WNF), realizacja przed zleceniami z limitem.' : 'PKC: realizacja po kolejnych najlepszych cenach, niezrealizowana reszta wygasa (WiA).') : 'PCR: realizacja tylko po najlepszej cenie przeciwnej, reszta wygasa.'}</p>`}
+    <label>Liczba akcji</label>
+    <div class="row seg">${[100, 200, 300, 400, 500].map(q => `<button class="btn ${T.q === q ? 'on' : ''}" ${q > wolne ? 'disabled' : ''} onclick="T.q=${q};rysujTelefon()">${q}</button>`).join('')}</div>
+    ${ostrz ? `<div class="warn">${ostrz}</div>` : ''}
+    <div style="margin-top:16px"><button class="btn main" id="wyslij" onclick="wyslij()">Złóż zlecenie</button></div>
+    <div class="small" style="margin-top:8px">${T.runda === 1 ? 'W tej rundzie: jedno zlecenie.' : `W tej rundzie: do 3 zleceń, łącznie do ${MAXQ} akcji. Złożone: ${mz.length}.`}</div>
+  </div>` : `<div class="card"><p>${!otwarta ? 'Runda jest zamknięta. Poczekaj na kolejną rundę i odśwież stronę.' : 'Złożono już wszystkie zlecenia w tej rundzie.'}</p></div>`}
+  ${(moje(1).length || moje(2).length) ? `<button class="btn" style="width:100%" onclick="sprawdz()">Sprawdź moje zlecenia</button><div id="wynik" style="margin-top:14px"></div>` : ''}
+  <p class="small" style="margin-top:18px"><button class="btn" onclick="telefon()">Odśwież rundę</button></p>`;
+}
+
+function ustawLimit(v) {
+  const x = Math.round(parseFloat(String(v).replace(',', '.')) * 100);
+  if (x > 0) T.p = Math.round(x / TICK) * TICK;
+  rysujTelefon();
+}
+
+async function wyslij() {
+  const r = rola(T.runda), b = $('#wyslij');
+  b.disabled = true; b.textContent = 'Wysyłanie…';
+  try {
+    const odp = await api({ a: 'dodaj', runda: T.runda, dev: DEV, strona: r.s, typ: T.typ, limit: (T.p / 100).toFixed(2), liczba: T.q, wartosc: (r.v / 100).toFixed(2) });
+    if (odp.ok) {
+      const mz = moje(T.runda); mz.push({ nr: odp.nr, typ: T.typ, p: T.typ === 'LIMIT' ? T.p : null, q: T.q }); LS.set('moje' + T.runda, mz);
+      T.info = `<b>Zlecenie przyjęte.</b> ${r.s === 'K' ? 'Kupno' : 'Sprzedaż'} ${T.q} akcji, ${T.typ === 'LIMIT' ? 'limit ' + zl(T.p) + ' zł' : T.typ}. Wynik sali zobaczysz na ekranie, a swój pod przyciskiem „Sprawdź moje zlecenia”.`;
+    } else {
+      T.info = odp.powod === 'zamknieta' ? 'Runda jest już zamknięta. Zlecenie nie zostało przyjęte.' : 'Zlecenie nie zostało przyjęte. Odśwież rundę i spróbuj jeszcze raz.';
+      if (odp.runda) { T.runda = odp.runda; T.faza = odp.powod === 'zamknieta' ? 'zamknieta' : T.faza; }
+    }
+  } catch (e) { T.info = 'Brak połączenia. Spróbuj jeszcze raz.'; }
+  rysujTelefon();
+}
+
+async function sprawdz() {
+  const w = $('#wynik'); w.innerHTML = '<p class="small">Liczenie…</p>';
+  try {
+    const st = await api({ a: 'stan' }); const X = przelicz(st);
+    let html = '';
+    [1, 2].forEach(runda => {
+      const mz = X.ord.filter(o => o.dev === DEV && o.runda === runda); if (!mz.length) return;
+      const r = LS.get('rola' + runda, null);
+      let suma = 0;
+      const wiersze = mz.map(o => {
+        let f = [];
+        if (runda === 1) { if (!X.r1koniec) return `<tr><td>${o.q}</td><td colspan="3">aukcja trwa</td></tr>`; f = (X.auk.fills[o.nr] || []).slice(); }
+        (X.ci.fills[o.nr] || []).forEach(x => f.push(x));
+        const q = f.reduce((a, x) => a + x.q, 0), wart = f.reduce((a, x) => a + x.q * x.p, 0);
+        const z = r ? f.reduce((a, x) => a + x.q * (o.s === 'K' ? r.v - x.p : x.p - r.v), 0) : 0; suma += z;
+        return `<tr><td>${o.q}</td><td>${q}</td><td>${q ? zl(Math.round(wart / q)) : '–'}</td><td class="${z >= 0 ? 'plus' : 'minus'}">${q ? zysk(z) : '–'}</td></tr>`;
+      }).join('');
+      html += `<div class="card"><h2>Runda ${runda}</h2><table><tr><th>Akcje</th><th>Wykonano</th><th>Cena śr.</th><th>Wynik</th></tr>${wiersze}</table>
+        ${runda === 1 && !X.r1koniec ? '<p style="margin-top:10px">Aukcja trwa. Wynik pojawi się po jej zamknięciu.</p>' : `<p style="margin-top:10px">Wynik rundy: <b class="${suma >= 0 ? 'plus' : 'minus'}">${zysk(suma)}</b>${runda === 1 && X.r1koniec && X.auk.kurs ? `. Kurs otwarcia: ${zl(X.auk.kurs)} zł.` : ''}</p>`}
+        <p class="small">Wynik: różnica między ceną transakcji a Twoją wartością akcji, razy liczba akcji. Część zlecenia z limitem, która nie weszła do transakcji, czeka w arkuszu.</p></div>`;
+    });
+    w.innerHTML = html || '<p class="small">Brak zleceń.</p>';
+  } catch (e) { w.innerHTML = '<p class="warn">Brak połączenia. Spróbuj jeszcze raz.</p>'; }
+}
+
+/* =========================================================
+   RZUTNIK
+   ========================================================= */
+let ST = null, zajety = false, ostatnieTr = 0;
+
+async function odswiez() {
+  if (zajety) return; zajety = true;
+  try { ST = await api({ a: 'stan' }); rysujSale(); }
+  catch (e) { const s = $('#status'); if (s) s.textContent = 'Brak połączenia, ponawiam…'; }
+  zajety = false;
+}
+
+async function admin(p) {
+  if (p.reset && !confirm('Usunąć wszystkie zlecenia i zacząć od rundy 1?')) return;
+  const odp = await api(Object.assign({ a: 'ustaw', k: KLUCZ }, p));
+  if (odp && odp.ok === false) { alert('Zły klucz w adresie strony. Użyj adresu z linii RZUTNIK.'); return; }
+  ostatnieTr = 0;
+  await odswiez();
+}
+
+function wykresAukcji(auk) {
+  const W = 860, H = 430, L = 90, R = 20, Tp = 20, Bt = 70;
+  let tab = auk.tab.filter(r => r.p >= REF - 600 && r.p <= REF + 600);
+  if (tab.length < 2) return '<p>Za mało zleceń, żeby narysować popyt i podaż.</p>';
+  const pmin = tab[0].p, pmax = tab[tab.length - 1].p;
+  const qmax = Math.max(...tab.map(r => Math.max(r.D, r.P)), 1);
+  const x = p => L + (p - pmin) / (pmax - pmin || 1) * (W - L - R);
+  const y = q => H - Bt - q / qmax * (H - Bt - Tp);
+  const schod = k => tab.map((r, i) => `${i ? 'L' : 'M'}${x(r.p).toFixed(1)},${y(r[k]).toFixed(1)}`).join(' ');
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%">`;
+  s += `<line x1="${L}" y1="${H - Bt}" x2="${W - R}" y2="${H - Bt}" stroke="#000" stroke-width="2"/><line x1="${L}" y1="${Tp}" x2="${L}" y2="${H - Bt}" stroke="#000" stroke-width="2"/>`;
+  s += `<path d="${schod('D')}" fill="none" stroke="#1d4ed8" stroke-width="5"/><path d="${schod('P')}" fill="none" stroke="#000" stroke-width="5"/>`;
+  if (auk.kurs !== null && auk.kurs >= pmin && auk.kurs <= pmax) s += `<line x1="${x(auk.kurs)}" y1="${Tp}" x2="${x(auk.kurs)}" y2="${H - Bt}" stroke="#000" stroke-dasharray="8 6" stroke-width="2"/>`;
+  s += `<text x="${L}" y="${H - 28}" class="tick">${zl(pmin)}</text><text x="${W - R}" y="${H - 28}" class="tick" text-anchor="end">${zl(pmax)}</text>`;
+  if (auk.kurs !== null) s += `<text x="${x(auk.kurs)}" y="${H - 28}" class="tick" text-anchor="middle" font-weight="700">${zl(auk.kurs)}</text>`;
+  s += `<text x="${L - 10}" y="${y(qmax) + 8}" class="tick" text-anchor="end">${szt(qmax)}</text><text x="${L - 10}" y="${H - Bt}" class="tick" text-anchor="end">0</text>`;
+  s += `<text x="${(L + W) / 2}" y="${H - 2}" class="tick" text-anchor="middle">cena, zł</text></svg>`;
+  s += `<p><b class="acc">Popyt</b>: akcje w zleceniach kupna z limitem równym cenie lub wyższym (i PKC).<br><b>Podaż</b>: akcje w zleceniach sprzedaży z limitem równym cenie lub niższym (i PKC).</p>`;
+  return s;
+}
+
+function wykresCiagly(tr, kurs0) {
+  const W = 860, H = 300, L = 90, R = 20, Tp = 20, Bt = 40;
+  if (tr.length < 2) return '<p>Wykres pojawi się po kilku transakcjach.</p>';
+  const ps = tr.map(t => t.p).concat(kurs0 ? [kurs0] : []);
+  const lo = Math.min(...ps) - 10, hi = Math.max(...ps) + 10;
+  const x = i => L + i / (tr.length - 1) * (W - L - R), y = p => Tp + (hi - p) / (hi - lo) * (H - Tp - Bt);
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%"><line x1="${L}" y1="${H - Bt}" x2="${W - R}" y2="${H - Bt}" stroke="#000" stroke-width="2"/><line x1="${L}" y1="${Tp}" x2="${L}" y2="${H - Bt}" stroke="#000" stroke-width="2"/>`;
+  if (kurs0) s += `<line x1="${L}" y1="${y(kurs0)}" x2="${W - R}" y2="${y(kurs0)}" stroke="#000" stroke-dasharray="8 6" stroke-width="2"/><text x="${W - R}" y="${y(kurs0) - 8}" class="tick" text-anchor="end">kurs otwarcia ${zl(kurs0)}</text>`;
+  s += `<polyline points="${tr.map((t, i) => x(i).toFixed(1) + ',' + y(t.p).toFixed(1)).join(' ')}" fill="none" stroke="#1d4ed8" stroke-width="5" stroke-linejoin="round"/>`;
+  s += `<text x="${L - 10}" y="${Tp + 16}" class="tick" text-anchor="end">${zl(hi)}</text><text x="${L - 10}" y="${H - Bt}" class="tick" text-anchor="end">${zl(lo)}</text>`;
+  s += `<text x="${(L + W) / 2}" y="${H - 6}" class="tick" text-anchor="middle">kolejne transakcje</text></svg>`;
+  return s;
+}
+
+function tabelaArkusza(B, A, n) {
+  const b = poziomy(B, n), a = poziomy(A, n), rows = [];
+  for (let i = 0; i < n; i++) {
+    const x = b[i], y = a[i];
+    rows.push(`<tr><td>${x ? x.n : ''}</td><td>${x ? szt(x.q) : ''}</td><td${i === 0 && x ? ' style="background:#ececec;font-weight:700"' : ''}>${x ? zl(x.p) : ''}</td>
+      <td${i === 0 && y ? ' style="background:#ececec;font-weight:700"' : ''}>${y ? zl(y.p) : ''}</td><td>${y ? szt(y.q) : ''}</td><td>${y ? y.n : ''}</td></tr>`);
+  }
+  return `<table><tr><th colspan="3">Kupno</th><th colspan="3">Sprzedaż</th></tr><tr><th>zleceń</th><th>akcji</th><th>limit</th><th>limit</th><th>akcji</th><th>zleceń</th></tr>${rows.join('')}</table>`;
+}
+
+function rysujSale() {
+  const st = ST, X = przelicz(st), otw = st.faza === 'otwarta';
+  const adres = location.origin + location.pathname;
+  let html = `<div class="top"><h1>Spółka X: ${st.runda === 1 ? 'aukcja otwarcia' : 'notowania ciągłe'}</h1>
+    <div class="small"><span id="status">${DEMO ? 'tryb ćwiczebny z botami' : otw ? 'zlecenia napływają' : 'runda zamknięta'}</span> · ${adres.replace(/^https?:\/\//, '')}</div></div>`;
+  if (st.runda === 1) {
+    const a = X.auk, nK = X.r1.filter(o => o.s === 'K').length, nS = X.r1.length - nK;
+    html += `<div class="kpis">
+      <div class="kpi"><div class="l">${otw ? 'Teoretyczny kurs otwarcia (TKO)' : 'Kurs otwarcia'}</div><div class="v acc">${a.kurs !== null ? zl(a.kurs) + ' zł' : '–'}</div></div>
+      <div class="kpi"><div class="l">${otw ? 'Teoretyczny wolumen (TWO)' : 'Wolumen'}</div><div class="v">${szt(a.V)}</div></div>
+      <div class="kpi"><div class="l">Zlecenia kupna / sprzedaży</div><div class="v">${nK} / ${nS}</div></div></div>`;
+    if (otw) {
+      html += `<div class="hidden-book">Arkusz jest ukryty, tak jak w czasie aukcji na GPW. Widać tylko TKO i TWO, które zmieniają się z każdym zleceniem.</div>`;
+    } else {
+      const nad = a.nadwyzka;
+      html += `<div class="grid"><div class="card"><h2>Popyt i podaż przy kolejnych cenach</h2>${wykresAukcji(a)}</div>
+        <div class="card"><h2>Wynik aukcji</h2>${a.kurs !== null ? `<p>Kurs otwarcia: <b>${zl(a.kurs)} zł</b>, wolumen ${szt(a.V)} akcji.</p>
+        <p>${nad === 0 ? 'Popyt i podaż przy tym kursie są równe.' : `Nadwyżka ${szt(Math.abs(nad))} akcji po stronie ${nad > 0 ? 'kupna' : 'sprzedaży'}: te zlecenia czekają w arkuszu na notowania ciągłe.`}</p>
+        <h2 style="margin-top:18px">Arkusz po otwarciu</h2>${tabelaArkusza(X.ci.B, X.ci.A, 5)}`
+        : '<p>Kurs nie został wyznaczony: żadne zlecenie kupna nie spotkało się ze zleceniem sprzedaży.</p>'}</div></div>`;
+    }
+  } else {
+    const tr = X.ci.trades, ost = tr.length ? tr[tr.length - 1].p : X.auk.kurs;
+    const bb = X.ci.B[0], ba = X.ci.A[0];
+    const zm = ost && X.auk.kurs ? (ost - X.auk.kurs) / X.auk.kurs * 100 : null;
+    html += `<div class="kpis">
+      <div class="kpi"><div class="l">Ostatni kurs</div><div class="v acc">${ost ? zl(ost) + ' zł' : '–'}</div></div>
+      <div class="kpi"><div class="l">Zmiana od otwarcia</div><div class="v">${zm === null ? '–' : (zm >= 0 ? '+' : '−') + Math.abs(zm).toFixed(2).replace('.', ',') + '%'}</div></div>
+      <div class="kpi"><div class="l">Spread</div><div class="v">${bb && ba ? zl(ba.p - bb.p) + ' zł' : '–'}</div></div>
+      <div class="kpi"><div class="l">Transakcje / wolumen</div><div class="v">${tr.length} / ${szt(tr.reduce((s, t) => s + t.q, 0))}</div></div></div>
+      <div class="grid"><div class="card"><h2>Arkusz zleceń</h2>${tabelaArkusza(X.ci.B, X.ci.A, 7)}</div>
+      <div class="card"><h2>Kurs w kolejnych transakcjach</h2>${wykresCiagly(tr, X.auk.kurs)}
+      <h2 style="margin-top:12px">Ostatnie transakcje</h2><table><tr><th>nr</th><th>cena</th><th>akcji</th><th>inicjator</th></tr>
+      ${tr.slice(-5).reverse().map(t => `<tr class="${t.nr > ostatnieTr ? 'tr-new' : ''}"><td>${t.nr}</td><td>${zl(t.p)}</td><td>${szt(t.q)}</td><td style="text-align:center">${t.ag === 'K' ? 'kupujący' : 'sprzedający'}</td></tr>`).join('')}</table></div></div>`;
+    ostatnieTr = tr.length;
+  }
+  html += `<div class="bar">
+    ${st.runda === 1 && otw ? `<button class="btn on" onclick="admin({faza:'zamknieta'})">Zamknij aukcję</button>` : ''}
+    ${st.runda === 1 && !otw ? `<button class="btn" onclick="admin({faza:'otwarta'})">Otwórz aukcję ponownie</button><button class="btn on" onclick="admin({runda:2,faza:'otwarta'})">Runda 2: notowania ciągłe</button>` : ''}
+    ${st.runda === 2 && otw ? `<button class="btn on" onclick="admin({faza:'zamknieta'})">Zakończ notowania</button>` : ''}
+    ${st.runda === 2 && !otw ? `<button class="btn" onclick="admin({faza:'otwarta'})">Wznów notowania</button>` : ''}
+    <button class="btn" onclick="admin({reset:1,runda:1,faza:'otwarta'})">Od nowa</button></div>`;
+  app.innerHTML = html;
+}
+
+/* ---------- start ---------- */
+if (SALA) {
+  document.body.classList.add('sala');
+  odswiez();
+  setInterval(odswiez, DEMO ? 1200 : 2500);
+  if (DEMO) setInterval(botTick, 700);
+} else {
+  telefon();
+}
+</script>
+</body>
+</html>
