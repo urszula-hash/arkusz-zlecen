@@ -51,8 +51,18 @@ body.sala main{max-width:none;padding:28px 44px}
 .sala td,.sala th{font-size:26px}
 .sala td,.sala th{padding:6px 14px;border-width:2px}
 .sala p{font-size:24px}
-.bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:flex-end;padding:10px 20px;background:rgba(255,255,255,.92);border-top:1px solid #ccc}
+.bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;padding:10px 20px;background:rgba(255,255,255,.95);border-top:1px solid #ccc}
+.bar .grp{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .bar .btn{font-size:16px;padding:8px 12px}
+.bar .btn.pz{font-size:18px;padding:8px 18px}
+.bar select{font:inherit;font-size:16px;border:2px solid var(--line);border-radius:10px;padding:7px 8px;background:#fff}
+.bar .stan{font-size:17px}
+body.sala main{padding-bottom:140px}
+.hl{background:#ffe08a!important;outline:3px solid #000;outline-offset:-3px}
+.zd{border:3px solid #000;border-radius:18px;padding:16px 22px;margin:0 0 18px;background:#fff8dc}
+.zd .k{font-size:20px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;margin-bottom:4px}
+.zd .t{font-size:32px;font-weight:800;line-height:1.2;margin-bottom:8px}
+.sala .zd p{font-size:25px;margin:0 0 6px}
 .hidden-book{display:flex;align-items:center;justify-content:center;text-align:center;min-height:300px;font-size:30px;color:var(--mut);border:2.5px dashed var(--line);border-radius:18px;padding:30px}
 svg text{font-family:Inter,system-ui,sans-serif}
 .tick{font-size:22px}
@@ -118,7 +128,7 @@ function demoApi(p) {
 }
 const api = p => DEMO ? demoApi(p) : jsonp(p);
 function botTick() {
-  if (DS.faza !== 'otwarta') return;
+  if (DS.faza !== 'otwarta' || V.pauza) return;
   const s = Math.random() < 0.5 ? 'K' : 'S';
   const v = losujWartosc();
   let typ = 'LIMIT';
@@ -189,7 +199,7 @@ function ciagle(start, ord) {
     const krzyz = r => o.typ === 'PKC' ? true : o.typ === 'PCR' ? r.p === best : (o.s === 'K' ? r.p <= o.p : r.p >= o.p);
     while (o.rem > 0 && opp.length && krzyz(opp[0])) {
       const r = opp[0], q = Math.min(o.rem, r.rem);
-      trades.push({ p: r.p, q, nr: trades.length + 1, ag: o.s });
+      trades.push({ p: r.p, q, nr: trades.length + 1, ag: o.s, bierny: r.nr, aktywny: o.nr });
       (fills[o.nr] = fills[o.nr] || []).push({ q, p: r.p });
       (fills[r.nr] = fills[r.nr] || []).push({ q, p: r.p });
       o.rem -= q; r.rem -= q;
@@ -346,8 +356,124 @@ async function sprawdz() {
    ========================================================= */
 let ST = null, zajety = false, ostatnieTr = 0;
 
+/* ---------- pauza i krok po kroku ----------
+   Na ekranie widać stan po pierwszych V.n zleceniach bieżącej rundy.
+   Krok 0: zlecenie właśnie weszło (arkusz sprzed zlecenia, podświetlone zlecenia, z którymi się skojarzy).
+   Krok 1: skutek (transakcje, arkusz po zleceniu). Serwer w tym czasie dalej przyjmuje zlecenia. */
+let V = { pauza: false, n: 0, krok: 1, runda: 0 };
+let TEMPO = 2000, botTimer = null;
+try { TEMPO = +localStorage.getItem('az_tempo') || 2000; } catch (e) {}
+
+const zleceniaRundy = st => wczytaj(st.zlecenia || []).filter(o => o.runda === st.runda);
+function przytnij(st, n) {
+  const ids = new Set(zleceniaRundy(st).slice(0, n).map(o => o.nr));
+  return Object.assign({}, st, { zlecenia: (st.zlecenia || []).filter(r => +r[2] !== st.runda || ids.has(+r[0])) });
+}
+const pauzaMozliwa = st => st && (st.runda === 2 || st.faza === 'otwarta');
+
+function pauza() {
+  if (!ST || !pauzaMozliwa(ST)) return;
+  if (V.pauza) { V.pauza = false; ostatnieTr = 1e9; }
+  else { V = { pauza: true, n: zleceniaRundy(ST).length, krok: 1, runda: ST.runda }; }
+  rysujSale();
+}
+function dalej() {
+  if (!ST || !pauzaMozliwa(ST)) return;
+  if (!V.pauza) { pauza(); return; }
+  const ile = zleceniaRundy(ST).length;
+  if (V.krok === 0) V.krok = 1;
+  else if (V.n < ile) { V.n++; V.krok = 0; }
+  rysujSale();
+}
+function wstecz() {
+  if (!ST || !pauzaMozliwa(ST)) return;
+  if (!V.pauza) { pauza(); return; }
+  if (V.krok === 1 && V.n > 0) V.krok = 0;
+  else if (V.n > 0) { V.n--; V.krok = 1; }
+  rysujSale();
+}
+function odPoczatku() { if (!V.pauza) pauza(); V.n = 0; V.krok = 1; rysujSale(); }
+function ustawTempo(ms) {
+  TEMPO = +ms; try { localStorage.setItem('az_tempo', TEMPO); } catch (e) {}
+  if (botTimer) clearInterval(botTimer);
+  botTimer = setInterval(botTick, TEMPO);
+}
+document.addEventListener('keydown', e => {
+  if (!SALA || e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.key === ' ' || e.key === 'p' || e.key === 'P') { e.preventDefault(); pauza(); }
+  else if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === 'ArrowDown') { e.preventDefault(); dalej(); }
+  else if (e.key === 'ArrowLeft' || e.key === 'PageUp' || e.key === 'ArrowUp') { e.preventDefault(); wstecz(); }
+});
+
+const strona = s => s === 'K' ? 'kupna' : 'sprzedaży';
+const opisZl = o => `${o.s === 'K' ? 'kupno' : 'sprzedaż'} ${szt(o.q)} akcji, ${o.typ === 'LIMIT' ? 'limit ' + zl(o.p) + ' zł' : o.typ === 'PKC' ? 'PKC (bez limitu ceny)' : 'PCR (po najlepszej cenie przeciwnej)'}`;
+const lTr = n => n === 1 ? 'transakcję' : (n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14)) ? 'transakcje' : 'transakcji';
+
+// Co pokazać na ekranie: pełny stan albo stan zatrzymany na zleceniu V.n
+function widok(st) {
+  if (!V.pauza || V.runda !== st.runda || !pauzaMozliwa(st)) { V.pauza = false; return { X: przelicz(st) }; }
+  const lista = zleceniaRundy(st);
+  V.n = Math.min(V.n, lista.length);
+  const n = V.n, Xpo = przelicz(przytnij(st, n));
+  if (n === 0) return { X: Xpo, zd: { k: 'Początek', t: st.runda === 1 ? 'Aukcja otwarcia: nie ma jeszcze zleceń' : 'Notowania ciągłe: arkusz po aukcji otwarcia',
+    p: [st.runda === 1 ? 'Kliknij „Dalej”, żeby zobaczyć pierwsze zlecenie.' : 'W arkuszu czekają zlecenia, które nie weszły do transakcji na otwarciu. Kliknij „Dalej”, żeby zobaczyć pierwsze nowe zlecenie.'] } };
+  const o = lista[n - 1], Xprz = przelicz(przytnij(st, n - 1));
+  const tyt = `Zlecenie ${n}: ${opisZl(o)}`;
+  if (st.runda === 1) {
+    const a0 = Xprz.auk, a1 = Xpo.auk;
+    if (V.krok === 0) return { X: Xprz, zd: { k: 'Wchodzi nowe zlecenie', t: tyt, p: ['Arkusz jest ukryty. Jak zmienią się TKO i TWO?'] } };
+    const p = [];
+    const tko = k => k === null ? 'brak' : zl(k) + ' zł';
+    if (a0.kurs === a1.kurs && a0.V === a1.V) p.push(`TKO i TWO bez zmian: ${tko(a1.kurs)}, ${szt(a1.V)} akcji.`);
+    else p.push(`TKO: ${tko(a0.kurs)} → <b>${tko(a1.kurs)}</b>. TWO: ${szt(a0.V)} → <b>${szt(a1.V)}</b> akcji.`);
+    if (o.typ === 'LIMIT' && a1.kurs !== null) {
+      if (o.s === 'K' && o.p < a1.kurs) p.push('Limit kupna jest niższy niż TKO, więc przy tym kursie to zlecenie nie weszłoby do transakcji.');
+      if (o.s === 'S' && o.p > a1.kurs) p.push('Limit sprzedaży jest wyższy niż TKO, więc przy tym kursie to zlecenie nie weszłoby do transakcji.');
+    }
+    if (o.typ === 'PKC') p.push('PKC w aukcji jest realizowane przed zleceniami z limitem, po kursie otwarcia.');
+    return { X: Xpo, zd: { k: 'Skutek', t: tyt, p } };
+  }
+  // runda 2: notowania ciągłe
+  const nowe = Xpo.ci.trades.slice(Xprz.ci.trades.length);
+  const druga = o.s === 'K' ? 'S' : 'K', oppL = o.s === 'K' ? Xprz.ci.A : Xprz.ci.B;
+  const ceny = new Set(nowe.map(t => t.p));
+  if (V.krok === 0) {
+    const p = [];
+    if (!oppL.length) p.push(`Po stronie ${strona(druga)} arkusz jest pusty: nie ma z czym skojarzyć zlecenia.`);
+    else {
+      const best = oppL[0].p;
+      p.push(`Najlepsza oferta ${strona(druga)} w arkuszu: ${zl(best)} zł.`);
+      if (nowe.length) p.push(o.typ === 'LIMIT' ? `Limit ${strona(o.s)} ${zl(o.p)} zł ${o.s === 'K' ? 'jest równy tej cenie lub wyższy' : 'jest równy tej cenie lub niższy'}, więc zlecenie skojarzy się z podświetlonymi zleceniami.`
+        : o.typ === 'PKC' ? 'PKC przyjmuje każdą cenę, więc zlecenie skojarzy się z podświetlonymi zleceniami (od najlepszej ceny w głąb arkusza).'
+        : 'PCR przyjmuje tylko najlepszą cenę po drugiej stronie, więc skojarzy się z podświetlonymi zleceniami.');
+      else if (o.typ === 'LIMIT') p.push(`Limit ${strona(o.s)} ${zl(o.p)} zł ${o.s === 'K' ? 'jest niższy' : 'jest wyższy'}, więc ceny się nie spotykają: brak skojarzenia.`);
+    }
+    return { X: Xprz, hl: { [druga]: ceny }, zd: { k: 'Wchodzi nowe zlecenie', t: tyt, p } };
+  }
+  const p = [], wyk = nowe.reduce((a, t) => a + t.q, 0), reszta = o.q - wyk, hl = { K: new Set(), S: new Set() };
+  if (nowe.length) {
+    const lst = nowe.map(t => `${szt(t.q)} akcji po ${zl(t.p)} zł`);
+    p.push(`Zawarto ${nowe.length} ${lTr(nowe.length)}: ${lst.slice(0, 4).join('; ')}${lst.length > 4 ? '; …' : ''}.`);
+    p.push(nowe.length === 1 ? `Cena transakcji to limit zlecenia ${strona(druga)}, które czekało w arkuszu.`
+      : `Ceny transakcji to limity zleceń ${strona(druga)}, które czekały w arkuszu.`);
+    const oppPo = o.s === 'K' ? Xpo.ci.A : Xpo.ci.B, znik = [], zost = [];
+    [...ceny].forEach(c => { const q = oppPo.filter(r => r.p === c).reduce((a, r) => a + r.rem, 0); if (q) { zost.push(`przy ${zl(c)} zł zostało w arkuszu ${szt(q)} akcji`); hl[druga].add(c); } else znik.push(zl(c) + ' zł'); });
+    const zd2 = [znik.length ? `w arkuszu nie ma już zleceń ${strona(druga)} z limitem ${znik.join(', ')}` : '', zost.join(', ')].filter(Boolean).join('; ');
+    p.push(zd2.charAt(0).toUpperCase() + zd2.slice(1) + '.');
+  } else p.push('Nie zawarto transakcji.');
+  if (reszta > 0 && o.typ === 'LIMIT') {
+    hl[o.s].add(o.p);
+    const naj = (o.s === 'K' ? Xpo.ci.B : Xpo.ci.A)[0];
+    p.push(`${nowe.length ? 'Pozostała część zlecenia, ' : 'Całe zlecenie, '}${szt(reszta)} akcji, czeka w arkuszu po stronie ${strona(o.s)} z limitem ${zl(o.p)} zł${naj && naj.nr === o.nr ? ': to teraz najlepsza oferta ' + strona(o.s) : ''}.`);
+  } else if (reszta > 0) p.push(`Pozostała część zlecenia, ${szt(reszta)} akcji, wygasa: ${o.typ} nie czeka w arkuszu.`);
+  return { X: Xpo, hl, noweTr: new Set(nowe.map(t => t.nr)), zd: { k: nowe.length ? 'Transakcja' : 'Skutek', t: tyt, p } };
+}
+const zdHtml = zd => zd ? `<div class="zd"><div class="k">${zd.k}</div><div class="t">${zd.t}</div>${zd.p.map(x => `<p>${x}</p>`).join('')}</div>` : '';
+
 async function odswiez() {
-  if (zajety) return; zajety = true;
+  if (zajety) return;
+  if (document.activeElement && document.activeElement.tagName === 'SELECT') return;
+  zajety = true;
   try { ST = await api({ a: 'stan' }); rysujSale(); }
   catch (e) { const s = $('#status'); if (s) s.textContent = 'Brak połączenia, ponawiam…'; }
   zajety = false;
@@ -357,7 +483,7 @@ async function admin(p) {
   if (p.reset && !confirm('Usunąć wszystkie zlecenia i zacząć od rundy 1?')) return;
   const odp = await api(Object.assign({ a: 'ustaw', k: KLUCZ }, p));
   if (odp && odp.ok === false) { alert('Zły klucz w adresie strony. Użyj adresu z linii RZUTNIK.'); return; }
-  ostatnieTr = 0;
+  ostatnieTr = 0; V.pauza = false;
   await odswiez();
 }
 
@@ -396,18 +522,20 @@ function wykresCiagly(tr, kurs0) {
   return s;
 }
 
-function tabelaArkusza(B, A, n) {
+function tabelaArkusza(B, A, n, hl) {
   const b = poziomy(B, n), a = poziomy(A, n), rows = [];
+  const hK = hl && hl.K || new Set(), hS = hl && hl.S || new Set();
   for (let i = 0; i < n; i++) {
     const x = b[i], y = a[i];
-    rows.push(`<tr><td>${x ? x.n : ''}</td><td>${x ? szt(x.q) : ''}</td><td${i === 0 && x ? ' style="background:#ececec;font-weight:700"' : ''}>${x ? zl(x.p) : ''}</td>
-      <td${i === 0 && y ? ' style="background:#ececec;font-weight:700"' : ''}>${y ? zl(y.p) : ''}</td><td>${y ? szt(y.q) : ''}</td><td>${y ? y.n : ''}</td></tr>`);
+    const cK = x && hK.has(x.p) ? ' class="hl"' : '', cS = y && hS.has(y.p) ? ' class="hl"' : '';
+    rows.push(`<tr><td${cK}>${x ? x.n : ''}</td><td${cK}>${x ? szt(x.q) : ''}</td><td${cK}${i === 0 && x ? ' style="background:#ececec;font-weight:700"' : ''}>${x ? zl(x.p) : ''}</td>
+      <td${cS}${i === 0 && y ? ' style="background:#ececec;font-weight:700"' : ''}>${y ? zl(y.p) : ''}</td><td${cS}>${y ? szt(y.q) : ''}</td><td${cS}>${y ? y.n : ''}</td></tr>`);
   }
   return `<table><tr><th colspan="3">Kupno</th><th colspan="3">Sprzedaż</th></tr><tr><th>zleceń</th><th>akcji</th><th>limit</th><th>limit</th><th>akcji</th><th>zleceń</th></tr>${rows.join('')}</table>`;
 }
 
 function rysujSale() {
-  const st = ST, X = przelicz(st), otw = st.faza === 'otwarta';
+  const st = ST, W = widok(st), X = W.X, otw = st.faza === 'otwarta', P = V.pauza;
   const adres = location.origin + location.pathname;
   let html = `<div class="top"><h1>Spółka X: ${st.runda === 1 ? 'aukcja otwarcia' : 'notowania ciągłe'}</h1>
     <div class="small"><span id="status">${DEMO ? 'tryb ćwiczebny z botami' : otw ? 'zlecenia napływają' : 'runda zamknięta'}</span> · ${adres.replace(/^https?:\/\//, '')}</div></div>`;
@@ -418,6 +546,7 @@ function rysujSale() {
       <div class="kpi"><div class="l">${otw ? 'Teoretyczny wolumen (TWO)' : 'Wolumen'}</div><div class="v">${szt(a.V)}</div></div>
       <div class="kpi"><div class="l">Zlecenia kupna / sprzedaży</div><div class="v">${nK} / ${nS}</div></div></div>`;
     if (otw) {
+      html += zdHtml(W.zd);
       html += `<div class="hidden-book">Arkusz jest ukryty, tak jak w czasie aukcji na GPW. Widać tylko TKO i TWO, które zmieniają się z każdym zleceniem.</div>`;
     } else {
       const nad = a.nadwyzka;
@@ -436,18 +565,30 @@ function rysujSale() {
       <div class="kpi"><div class="l">Zmiana od otwarcia</div><div class="v">${zm === null ? '–' : (zm >= 0 ? '+' : '−') + Math.abs(zm).toFixed(2).replace('.', ',') + '%'}</div></div>
       <div class="kpi"><div class="l">Spread</div><div class="v">${bb && ba ? zl(ba.p - bb.p) + ' zł' : '–'}</div></div>
       <div class="kpi"><div class="l">Transakcje / wolumen</div><div class="v">${tr.length} / ${szt(tr.reduce((s, t) => s + t.q, 0))}</div></div></div>
-      <div class="grid"><div class="card"><h2>Arkusz zleceń</h2>${tabelaArkusza(X.ci.B, X.ci.A, 7)}</div>
-      <div class="card"><h2>Kurs w kolejnych transakcjach</h2>${wykresCiagly(tr, X.auk.kurs)}
+      <div class="grid"><div class="card"><h2>Arkusz zleceń</h2>${tabelaArkusza(X.ci.B, X.ci.A, 7, W.hl)}</div>
+      <div class="card">${P ? zdHtml(W.zd) : `<h2>Kurs w kolejnych transakcjach</h2>${wykresCiagly(tr, X.auk.kurs)}`}
       <h2 style="margin-top:12px">Ostatnie transakcje</h2><table><tr><th>nr</th><th>cena</th><th>akcji</th><th>inicjator</th></tr>
-      ${tr.slice(-5).reverse().map(t => `<tr class="${t.nr > ostatnieTr ? 'tr-new' : ''}"><td>${t.nr}</td><td>${zl(t.p)}</td><td>${szt(t.q)}</td><td style="text-align:center">${t.ag === 'K' ? 'kupujący' : 'sprzedający'}</td></tr>`).join('')}</table></div></div>`;
-    ostatnieTr = tr.length;
+      ${tr.slice(-5).reverse().map(t => { const c = P ? (W.noweTr && W.noweTr.has(t.nr) ? ' class="hl"' : '') : (t.nr > ostatnieTr ? ' class="tr-new"' : ''); return `<tr${c}><td>${t.nr}</td><td>${zl(t.p)}</td><td>${szt(t.q)}</td><td style="text-align:center">${t.ag === 'K' ? 'kupujący' : 'sprzedający'}</td></tr>`; }).join('')}</table></div></div>`;
+    if (!P) ostatnieTr = tr.length;
   }
-  html += `<div class="bar">
+  const ile = zleceniaRundy(st).length;
+  let lewa = '';
+  if (pauzaMozliwa(st)) {
+    lewa = P ? `<button class="btn on pz" onclick="pauza()">▶ Wznów</button>
+      <button class="btn pz" onclick="wstecz()" ${V.n === 0 && V.krok === 1 ? 'disabled' : ''}>← Wstecz</button>
+      <button class="btn pz" onclick="dalej()" ${V.n >= ile && V.krok === 1 ? 'disabled' : ''}>Dalej →</button>
+      <button class="btn" onclick="odPoczatku()">Od początku rundy</button>
+      <span class="stan">Pauza: zlecenie ${V.n} z ${ile}${ile > V.n ? ` (czeka ${ile - V.n})` : ''}</span>`
+      : `<button class="btn pz" onclick="pauza()">❚❚ Pauza</button>`;
+    if (DEMO) lewa += `<label class="stan" style="margin:0 0 0 8px;font-weight:400">Tempo botów:</label><select onchange="ustawTempo(this.value);this.blur()">
+      ${[[700, 'szybko'], [2000, 'średnio'], [4000, 'wolno'], [8000, 'bardzo wolno']].map(t => `<option value="${t[0]}" ${TEMPO === t[0] ? 'selected' : ''}>${t[1]}</option>`).join('')}</select>`;
+  }
+  html += `<div class="bar"><div class="grp">${lewa}</div><div class="grp">
     ${st.runda === 1 && otw ? `<button class="btn on" onclick="admin({faza:'zamknieta'})">Zamknij aukcję</button>` : ''}
     ${st.runda === 1 && !otw ? `<button class="btn" onclick="admin({faza:'otwarta'})">Otwórz aukcję ponownie</button><button class="btn on" onclick="admin({runda:2,faza:'otwarta'})">Runda 2: notowania ciągłe</button>` : ''}
     ${st.runda === 2 && otw ? `<button class="btn on" onclick="admin({faza:'zamknieta'})">Zakończ notowania</button>` : ''}
     ${st.runda === 2 && !otw ? `<button class="btn" onclick="admin({faza:'otwarta'})">Wznów notowania</button>` : ''}
-    <button class="btn" onclick="admin({reset:1,runda:1,faza:'otwarta'})">Od nowa</button></div>`;
+    <button class="btn" onclick="admin({reset:1,runda:1,faza:'otwarta'})">Od nowa</button></div></div>`;
   app.innerHTML = html;
 }
 
@@ -456,7 +597,7 @@ if (SALA) {
   document.body.classList.add('sala');
   odswiez();
   setInterval(odswiez, DEMO ? 1200 : 2500);
-  if (DEMO) setInterval(botTick, 700);
+  if (DEMO) ustawTempo(TEMPO);
 } else {
   telefon();
 }
