@@ -539,6 +539,17 @@ function tabelaArkusza(B, A, n, hl) {
   return `<table><tr><th colspan="3">Kupno</th><th colspan="3">Sprzedaż</th></tr><tr><th>zleceń</th><th>akcji</th><th>limit</th><th>limit</th><th>akcji</th><th>zleceń</th></tr>${rows.join('')}</table>`;
 }
 
+// Zlecenia PKC w aukcji: realizowane przed zleceniami z limitem, reszta wygasa (WNF), więc nie ma ich w arkuszu po otwarciu
+function pkcInfo(r1, a) {
+  const pk = r1.filter(o => o.typ !== 'LIMIT'); if (!pk.length) return '';
+  const ile = o => (a.fills[o.nr] || []).reduce((s, x) => s + x.q, 0);
+  const opis = s => { const l = pk.filter(o => o.s === s); if (!l.length) return '';
+    const q = l.reduce((t, o) => t + o.q, 0), w = l.reduce((t, o) => t + ile(o), 0);
+    return `<li>${s === 'K' ? 'kupno' : 'sprzedaż'}: ${l.length} ${l.length === 1 ? 'zlecenie' : l.length < 5 ? 'zlecenia' : 'zleceń'}, ${szt(q)} akcji; zrealizowano ${szt(w)}${q - w > 0 ? `, wygasło ${szt(q - w)}` : ''}</li>`; };
+  return `<p style="margin-top:10px"><b>Zlecenia PKC w aukcji</b></p><ul style="margin:4px 0 0">${opis('K')}${opis('S')}</ul>
+    <p class="small" style="margin-top:6px">PKC ma pierwszeństwo przed zleceniami z limitem i jest realizowane po kursie otwarcia. Niezrealizowana część PKC wygasa, dlatego zleceń PKC nie ma w arkuszu po otwarciu.</p>`;
+}
+
 function rysujSale() {
   const st = ST, W = widok(st), X = W.X, otw = st.faza === 'otwarta', P = V.pauza;
   const adres = location.origin + location.pathname;
@@ -558,6 +569,7 @@ function rysujSale() {
       html += `<div class="grid"><div class="card"><h2>Popyt i podaż przy kolejnych cenach</h2>${wykresAukcji(a)}</div>
         <div class="card"><h2>Wynik aukcji</h2>${a.kurs !== null ? `<p>Kurs otwarcia: <b>${zl(a.kurs)} zł</b>, wolumen ${szt(a.V)} akcji.</p>
         <p>${nad === 0 ? 'Popyt i podaż przy tym kursie są równe.' : `Nadwyżka ${szt(Math.abs(nad))} akcji po stronie ${nad > 0 ? 'kupna' : 'sprzedaży'}: te zlecenia czekają w arkuszu na notowania ciągłe.`}</p>
+        ${pkcInfo(X.r1, a)}
         <h2 style="margin-top:18px">Arkusz po otwarciu</h2>${tabelaArkusza(X.ci.B, X.ci.A, 5)}`
         : '<p>Kurs nie został wyznaczony: żadne zlecenie kupna nie spotkało się ze zleceniem sprzedaży.</p>'}</div></div>`;
     }
