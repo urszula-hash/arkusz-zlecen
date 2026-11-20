@@ -81,11 +81,13 @@ svg text{font-family:Inter,system-ui,sans-serif}
    ========================================================= */
 const REF = 5000;          // kurs odniesienia: 50,00 zł (w groszach)
 const TICK = 5;            // krok notowania w aplikacji: 0,05 zł
-const MAXQ = 500;          // akcje na osobę
+const MAXQ = 1000;         // akcje na osobę w rundzie (łącznie we wszystkich zleceniach)
+const MAXZ = 5;            // zleceń na osobę w rundzie
 const prm = new URLSearchParams(location.search);
 const API = (window.API_URL || '').trim();
 const DEMO = prm.has('demo') || !API;
 const SALA = prm.has('sala');
+const TEST = prm.has('cwiczenia');   // tryb do samodzielnego przećwiczenia: dowolna strona i liczba zleceń
 const KLUCZ = prm.get('sala') || '';
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -261,9 +263,10 @@ async function telefon() {
 
 function rysujTelefon() {
   const r = rola(T.runda), mz = moje(T.runda);
-  const lim = T.runda === 1 ? 1 : 3;
-  const uzyte = mz.reduce((a, z) => a + z.q, 0);
-  const kup = r.s === 'K';
+  const lim = TEST ? 9999 : MAXZ;
+  const uzyte = TEST ? 0 : mz.reduce((a, z) => a + z.q, 0);
+  if (!T.s) T.s = r.s;
+  const kup = (TEST ? T.s : r.s) === 'K';
   const typy = T.runda === 1 ? [['LIMIT', 'Limit'], ['PKC', 'PKC']] : [['LIMIT', 'Limit'], ['PKC', 'PKC'], ['PCR', 'PCR']];
   if (!typy.some(t => t[0] === T.typ)) T.typ = 'LIMIT';
   const wolne = Math.max(0, MAXQ - uzyte);
@@ -285,7 +288,9 @@ function rysujTelefon() {
   ${T.info ? `<div class="card">${T.info}</div>` : ''}
   ${mozna ? `
   <div class="card">
-    <h2>Nowe zlecenie ${kup ? 'kupna' : 'sprzedaży'}</h2>
+    <h2>${mz.length ? 'Kolejne' : 'Nowe'} zlecenie ${kup ? 'kupna' : 'sprzedaży'}</h2>
+    ${TEST ? `<label>Strona zlecenia</label>
+    <div class="row seg"><button class="btn ${kup ? 'on' : ''}" onclick="T.s='K';rysujTelefon()">Kupno</button><button class="btn ${!kup ? 'on' : ''}" onclick="T.s='S';rysujTelefon()">Sprzedaż</button></div>` : ''}
     <label>Rodzaj zlecenia</label>
     <div class="row seg">${typy.map(t => `<button class="btn ${T.typ === t[0] ? 'on' : ''}" onclick="T.typ='${t[0]}';rysujTelefon()">${t[1]}</button>`).join('')}</div>
     ${T.typ === 'LIMIT' ? `<label>Limit ceny, zł</label>
@@ -298,8 +303,8 @@ function rysujTelefon() {
     <div class="row seg">${[100, 200, 300, 400, 500].map(q => `<button class="btn ${T.q === q ? 'on' : ''}" ${q > wolne ? 'disabled' : ''} onclick="T.q=${q};rysujTelefon()">${q}</button>`).join('')}</div>
     ${ostrz ? `<div class="warn">${ostrz}</div>` : ''}
     <div style="margin-top:16px"><button class="btn main" id="wyslij" onclick="wyslij()">Złóż zlecenie</button></div>
-    <div class="small" style="margin-top:8px">${T.runda === 1 ? 'W tej rundzie: jedno zlecenie.' : `W tej rundzie: do 3 zleceń, łącznie do ${MAXQ} akcji. Złożone: ${mz.length}.`}</div>
-  </div>` : `<div class="card"><p>${!otwarta ? 'Runda jest zamknięta. Poczekaj na kolejną rundę i odśwież stronę.' : 'Złożono już wszystkie zlecenia w tej rundzie.'}</p></div>`}
+    <div class="small" style="margin-top:8px">${TEST ? `Tryb ćwiczeń: dowolna liczba zleceń kupna i sprzedaży. Złożone: ${mz.length}.` : `W tej rundzie: do ${MAXZ} zleceń, łącznie do ${szt(MAXQ)} akcji. Złożone: ${mz.length}, wolne: ${szt(wolne)} akcji.`}</div>
+  </div>` : `<div class="card"><p>${!otwarta ? 'Runda jest zamknięta. Poczekaj na kolejną rundę i odśwież stronę.' : `Wykorzystano limit tej rundy: ${MAXZ} zleceń albo ${szt(MAXQ)} akcji.`}</p></div>`}
   ${(moje(1).length || moje(2).length) ? `<button class="btn" style="width:100%" onclick="sprawdz()">Sprawdź moje zlecenia</button><div id="wynik" style="margin-top:14px"></div>` : ''}
   <p class="small" style="margin-top:18px"><button class="btn" onclick="telefon()">Odśwież rundę</button></p>`;
 }
@@ -311,7 +316,7 @@ function ustawLimit(v) {
 }
 
 async function wyslij() {
-  const r = rola(T.runda), b = $('#wyslij');
+  const r0 = rola(T.runda), r = TEST ? { s: T.s || r0.s, v: r0.v } : r0, b = $('#wyslij');
   b.disabled = true; b.textContent = 'Wysyłanie…';
   try {
     const odp = await api({ a: 'dodaj', runda: T.runda, dev: DEV, strona: r.s, typ: T.typ, limit: (T.p / 100).toFixed(2), liczba: T.q, wartosc: (r.v / 100).toFixed(2) });
